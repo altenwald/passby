@@ -2,7 +2,7 @@
 
 [![Hex Package](https://img.shields.io/hexpm/v/passby.svg)](https://hex.pm/packages/passby)
 [![Hex Docs](https://img.shields.io/badge/hex-docs-purple.svg)](https://hexdocs.pm/passby)
-[![License](https://img.shields.io/hexpm/l/passby.svg)](https://github.com/altenwald/passby/blob/main/LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/altenwald/passby/blob/main/LICENSE)
 [![CI](https://github.com/altenwald/passby/actions/workflows/elixir.yml/badge.svg)](https://github.com/altenwald/passby/actions/workflows/elixir.yml)
 
 A **100% Elixir, 0-dependency** mock HTTP server designed for testing HTTP clients and integrations.
