@@ -46,6 +46,7 @@ jobs:
           path: |
             deps
             _build
+            .plts
           key: ${{ runner.os }}-mix-${{ matrix.otp }}-${{ matrix.elixir }}-${{ hashFiles('**/mix.lock') }}
           restore-keys: |
             ${{ runner.os }}-mix-${{ matrix.otp }}-${{ matrix.elixir }}-

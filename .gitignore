@@ -26,5 +26,6 @@ passby-*.tar
 /tmp/
 
 # Dialyzer PLTs
+.plts/
 *.plt
 *.plt.hash
