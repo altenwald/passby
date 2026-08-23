@@ -4,6 +4,8 @@
 [![Hex Docs](https://img.shields.io/badge/hex-docs-purple.svg)](https://hexdocs.pm/passby)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/altenwald/passby/blob/main/LICENSE)
 [![CI](https://github.com/altenwald/passby/actions/workflows/elixir.yml/badge.svg)](https://github.com/altenwald/passby/actions/workflows/elixir.yml)
+[![Paypal: Donation](https://img.shields.io/badge/paypal-donation-yellow)](https://www.paypal.com/donate/?hosted_button_id=XK6Z5XATN77L2)
+[![Patreon: Donation](https://img.shields.io/badge/patreon-donation-yellow)](https://www.patreon.com/altenwald)
 
 A **100% Elixir, 0-dependency** mock HTTP server designed for testing HTTP clients and integrations.
 
