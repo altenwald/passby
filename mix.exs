@@ -45,7 +45,10 @@ defmodule Passby.MixProject do
     [
       files: ~w(lib mix.exs README* LICENSE* .formatter.exs),
       licenses: ["MIT"],
-      links: %{"GitHub" => @source_url}
+      links: %{
+        "GitHub" => @source_url,
+        "Docs" => "https://hexdocs.pm/passby"
+      }
     ]
   end
 
