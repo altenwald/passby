@@ -15,7 +15,7 @@ defmodule Passby do
           Passby.Conn.resp(conn, 200, ~s({"id": 42, "name": "Alice"}))
         end)
 
-        assert {:ok, %{"name" => "Alice"}} = MyClient.get_user("http://localhost:\#{bypass.port}/api/users/42")
+        assert {:ok, %{"name" => "Alice"}} = MyClient.get_user("\#{bypass.url}/api/users/42")
       end
 
   ## Plug and Bypass Compatibility
@@ -29,10 +29,11 @@ defmodule Passby do
 
   @type t :: %__MODULE__{
           pid: pid(),
-          port: :inet.port_number()
+          port: :inet.port_number(),
+          url: String.t()
         }
 
-  defstruct [:pid, :port]
+  defstruct [:pid, :port, :url]
 
   @doc """
   Starts a new `Passby` mock HTTP server instance.
@@ -47,14 +48,48 @@ defmodule Passby do
       iex> bypass = Passby.open()
       iex> is_integer(bypass.port)
       true
+      iex> is_binary(bypass.url)
+      true
+      iex> bypass.url =~ "http://127.0.0.1:"
+      true
 
   """
   @spec open(keyword()) :: t()
   def open(opts \\ []) do
     {:ok, pid} = Instance.start_link(opts)
     port = Instance.port(pid)
-    %__MODULE__{pid: pid, port: port}
+    url = build_url(opts, port)
+    %__MODULE__{pid: pid, port: port, url: url}
   end
+
+  @doc """
+  Returns the base URL of the `Passby` instance.
+
+  ## Examples
+
+      iex> bypass = Passby.open()
+      iex> Passby.url(bypass) == bypass.url
+      true
+
+  """
+  @spec url(t()) :: String.t()
+  def url(%__MODULE__{url: base_url}), do: base_url
+
+  @doc """
+  Returns the URL of the `Passby` instance with the given `path` appended.
+
+  ## Examples
+
+      iex> bypass = Passby.open()
+      iex> Passby.url(bypass, "/api/users/42") == "\#{bypass.url}/api/users/42"
+      true
+      iex> Passby.url(bypass, "api/users/42") == "\#{bypass.url}/api/users/42"
+      true
+
+  """
+  @spec url(t(), String.t()) :: String.t()
+  def url(%__MODULE__{url: base_url}, "/" <> _ = path), do: base_url <> path
+  def url(%__MODULE__{url: base_url}, path) when is_binary(path), do: "#{base_url}/#{path}"
 
   @doc """
   Adds an expectation that will be called for any incoming request.
@@ -173,4 +208,16 @@ defmodule Passby do
   Sends the configured response. Delegate to `Passby.Conn.send_resp/1`.
   """
   defdelegate send_resp(conn), to: Conn
+
+  # Private Helpers
+
+  defp build_url(opts, port) do
+    host =
+      case Keyword.get(opts, :bind_address, {127, 0, 0, 1}) do
+        ip when is_tuple(ip) -> ip |> :inet.ntoa() |> to_string()
+        host when is_binary(host) -> host
+      end
+
+    "http://#{host}:#{port}"
+  end
 end

@@ -27,6 +27,15 @@ defmodule PassbyTest do
     assert is_integer(bypass.port)
     assert bypass.port > 0
     assert is_pid(bypass.pid)
+    assert bypass.url == "http://127.0.0.1:#{bypass.port}"
+    assert Passby.url(bypass) == "http://127.0.0.1:#{bypass.port}"
+    assert Passby.url(bypass, "/api/users/42") == "http://127.0.0.1:#{bypass.port}/api/users/42"
+    assert Passby.url(bypass, "api/users/42") == "http://127.0.0.1:#{bypass.port}/api/users/42"
+  end
+
+  test "starts an instance with custom bind_address" do
+    bypass = Passby.open(bind_address: {127, 0, 0, 1})
+    assert bypass.url == "http://127.0.0.1:#{bypass.port}"
   end
 
   test "starts an instance on a specific port" do

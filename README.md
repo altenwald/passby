@@ -55,8 +55,7 @@ defmodule MyClientTest do
       |> Passby.resp(200, ~s({"id": 42, "name": "Alice"}))
     end)
 
-    url = "http://127.0.0.1:#{bypass.port}/api/users/42"
-    assert {:ok, %{"name" => "Alice"}} = MyClient.get_user(url)
+    assert {:ok, %{"name" => "Alice"}} = MyClient.get_user("#{bypass.url}/api/users/42")
   end
 end
 ```
@@ -131,7 +130,7 @@ end)
 test "handles server outages gracefully", %{bypass: bypass} do
   Passby.down(bypass)
 
-  url = "http://127.0.0.1:#{bypass.port}/api"
+  url = Passby.url(bypass, "/api")
   assert {:error, :econnrefused} = MyClient.get(url)
 
   Passby.up(bypass)
