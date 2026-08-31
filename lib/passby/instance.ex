@@ -228,35 +228,31 @@ defmodule Passby.Instance do
   end
 
   defp dispatch_handler(client_socket, conn, fun) when is_function(fun, 1) do
-    try do
-      result = fun.(conn)
-      handle_handler_result(client_socket, conn, result)
-    rescue
-      e ->
-        Logger.error(
-          "Passby handler raised error: #{Exception.format(:error, e, __STACKTRACE__)}"
-        )
+    result = fun.(conn)
+    handle_handler_result(client_socket, conn, result)
+  rescue
+    e ->
+      Logger.error("Passby handler raised error: #{Exception.format(:error, e, __STACKTRACE__)}")
 
-        conn
-        |> Conn.resp(500, "Internal Server Error in Passby Handler")
-        |> Conn.send_resp()
-    catch
-      :exit, reason ->
-        Logger.error("Passby handler caught exit: #{inspect(reason)}")
+      conn
+      |> Conn.resp(500, "Internal Server Error in Passby Handler")
+      |> Conn.send_resp()
+  catch
+    :exit, reason ->
+      Logger.error("Passby handler caught exit: #{inspect(reason)}")
 
-        conn
-        |> Conn.resp(500, "Internal Server Error in Passby Handler")
-        |> Conn.send_resp()
+      conn
+      |> Conn.resp(500, "Internal Server Error in Passby Handler")
+      |> Conn.send_resp()
 
-      value ->
-        Logger.error("Passby handler caught throw: #{inspect(value)}")
+    value ->
+      Logger.error("Passby handler caught throw: #{inspect(value)}")
 
-        conn
-        |> Conn.resp(500, "Internal Server Error in Passby Handler")
-        |> Conn.send_resp()
-    after
-      :gen_tcp.close(client_socket)
-    end
+      conn
+      |> Conn.resp(500, "Internal Server Error in Passby Handler")
+      |> Conn.send_resp()
+  after
+    :gen_tcp.close(client_socket)
   end
 
   defp handle_handler_result(_socket, _conn, %Conn{state: :sent}) do
