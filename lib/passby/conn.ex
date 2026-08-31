@@ -13,6 +13,8 @@ defmodule Passby.Conn do
 
   @type t :: %__MODULE__{
           adapter: {module(), any()},
+          host: String.t(),
+          port: :inet.port_number() | nil,
           method: String.t(),
           request_path: String.t(),
           path_info: [String.t()],
@@ -29,6 +31,8 @@ defmodule Passby.Conn do
         }
 
   defstruct adapter: {Passby, nil},
+            host: "127.0.0.1",
+            port: nil,
             method: "GET",
             request_path: "/",
             path_info: [],

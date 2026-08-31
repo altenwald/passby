@@ -65,10 +65,15 @@ defmodule Passby do
   """
   @spec open(keyword()) :: t()
   def open(opts \\ []) do
-    {:ok, pid} = Instance.start_link(opts)
-    port = Instance.port(pid)
-    url = build_url(opts, port)
-    %__MODULE__{pid: pid, port: port, url: url}
+    case Instance.start_link(opts) do
+      {:ok, pid} ->
+        port = Instance.port(pid)
+        url = build_url(opts, port)
+        %__MODULE__{pid: pid, port: port, url: url}
+
+      {:error, reason} ->
+        raise "Failed to start Passby instance: #{inspect(reason)}"
+    end
   end
 
   @doc """

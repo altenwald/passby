@@ -103,6 +103,28 @@ Passby.expect(bypass, "POST", "/messages", fn conn ->
 end)
 ```
 
+### Compatibility scope
+
+`test/bypass_compat_test.exs` ports every scenario from the `Bypass` test suite.
+The following API is supported with identical semantics:
+
+`open/1`, `expect/2`, `expect/4`, `expect_once/2`, `expect_once/4`, `stub/4`,
+`pass/1`, `down/1`, `up/1`, `:param` route patterns, `conn.params` /
+`conn.query_params` / `conn.path_params` / `conn.port`, and route redefinition
+(last definition wins).
+
+The following `Bypass` behaviour is **not yet implemented** in `Passby`
+(`test/bypass_compat_test.exs` covers each of these, asserting the current
+behaviour):
+
+| Bypass | Passby (current) |
+| --- | --- |
+| Automatic verification on test exit (`expect` raises if never called, `expect_once` raises if called twice) | No automatic verification; an unmet expectation is ignored and an unexpected request returns `500` |
+| `verify_expectations!/1` and the `:test_framework` / ESpec integration | Not implemented |
+| `expect/3` and `expect/5` with an exact expected request count | Not implemented (`expect` is "one or more", `expect_once` is "at most once") |
+| `pass/1` marks the in-flight request as arrived | `pass/1` clears every expectation and stub |
+| `down/1` blocks until in-flight handlers finish | `down/1` closes the listening socket immediately |
+
 ---
 
 ## Usage Patterns

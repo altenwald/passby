@@ -122,7 +122,7 @@ defmodule Passby.Instance do
       fun: fun
     }
 
-    {:reply, :ok, %{state | expectations: state.expectations ++ [exp]}}
+    {:reply, :ok, %{state | expectations: upsert_expectation(state.expectations, exp)}}
   end
 
   def handle_call(:pass, _from, state) do
@@ -372,6 +372,18 @@ defmodule Passby.Instance do
   end
 
   defp match_segments(_exp_segments, _req_segments, _params), do: :error
+
+  # Redefining an expectation for the same {type, method, path} replaces the
+  # previous one in place (last definition wins), matching Bypass, which keys
+  # routes by {method, path}. Distinct routes keep their registration order.
+  defp upsert_expectation(expectations, exp) do
+    case Enum.find_index(expectations, fn e ->
+           e.type == exp.type and e.method == exp.method and e.path == exp.path
+         end) do
+      nil -> expectations ++ [exp]
+      index -> List.replace_at(expectations, index, exp)
+    end
+  end
 
   defp normalize_filter(nil), do: nil
   defp normalize_filter(atom) when is_atom(atom), do: atom |> Atom.to_string() |> String.upcase()

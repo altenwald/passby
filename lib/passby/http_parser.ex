@@ -21,10 +21,13 @@ defmodule Passby.HttpParser do
          {:ok, headers, body_buffer} <- decode_headers(socket, rest, [], timeout),
          {:ok, body} <- read_body(socket, headers, body_buffer, timeout) do
       {method, path, query_string, path_info} = parse_request_line(request_line)
+      {host, port} = host_and_port(headers, socket)
 
       conn =
         %Conn{
           adapter: {Passby, socket},
+          host: host,
+          port: port,
           method: method,
           request_path: path,
           path_info: path_info,
@@ -37,6 +40,23 @@ defmodule Passby.HttpParser do
 
       {:ok, conn}
     end
+  end
+
+  defp host_and_port(headers, socket) do
+    # The port is the real bound port; the Host header only informs the host name.
+    port =
+      case :inet.sockname(socket) do
+        {:ok, {_ip, bound_port}} -> bound_port
+        _ -> nil
+      end
+
+    host =
+      case Enum.find(headers, fn {k, _v} -> k == "host" end) do
+        {_, value} -> value |> String.split(":", parts: 2) |> hd()
+        nil -> "127.0.0.1"
+      end
+
+    {host, port}
   end
 
   defp ensure_data(_socket, buffer, _timeout) when byte_size(buffer) > 0, do: {:ok, buffer}
