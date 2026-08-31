@@ -32,6 +32,19 @@ defmodule Passby do
 
   Expectation paths may use `:param` segments (`"/users/:id"`); captured values
   land in `conn.path_params` and are merged into `conn.params`.
+
+  ## Verification
+
+  Expectations are verified when the test that opened the instance finishes.
+  `expect/2,4` must receive at least one request, `expect_once/2,4` exactly one,
+  `expect/3,5` exactly the number given, and a request matching no expectation
+  fails the test. `stub/4` is never verified. An error raised inside a handler
+  (a failed `assert`, for instance) is re-raised at verification instead of
+  being swallowed by the `500` the client receives.
+
+  Verification is automatic under ExUnit. Outside of it, call
+  `verify_expectations!/1` yourself, or pass `verify: false` to `open/1` when
+  using `Passby` as a plain fake server rather than as a test double.
   """
 
   alias Passby.{Conn, Instance}
@@ -51,6 +64,8 @@ defmodule Passby do
 
     * `:port` - The port number to listen on (default `0` for dynamic ephemeral port).
     * `:bind_address` - The IP address tuple to bind to (default `{127, 0, 0, 1}`).
+    * `:verify` - Whether to verify expectations automatically when the test
+      exits (default `true`). Has no effect outside a test process.
 
   ## Examples
 
@@ -65,15 +80,41 @@ defmodule Passby do
   """
   @spec open(keyword()) :: t()
   def open(opts \\ []) do
-    case Instance.start_link(opts) do
+    case start_instance(opts) do
       {:ok, pid} ->
         port = Instance.port(pid)
         url = build_url(opts, port)
-        %__MODULE__{pid: pid, port: port, url: url}
+        bypass = %__MODULE__{pid: pid, port: port, url: url}
+        setup_verification(bypass, opts)
+        bypass
 
       {:error, reason} ->
         raise "Failed to start Passby instance: #{inspect(reason)}"
     end
+  end
+
+  @doc """
+  Verifies the expectations declared on the instance, raising on failure.
+
+  Under ExUnit this runs automatically when the test exits, so calling it is
+  only needed to assert mid-test, or when driving `Passby` from another test
+  framework.
+
+  ## Examples
+
+      bypass = Passby.open()
+      Passby.expect_once(bypass, "GET", "/health", &Passby.Conn.resp(&1, 200, "ok"))
+      _ = :httpc.request(~c"\#{bypass.url}/health")
+
+      Passby.verify_expectations!(bypass)
+      #=> :ok
+
+  """
+  @spec verify_expectations!(t()) :: :ok | no_return()
+  def verify_expectations!(%__MODULE__{pid: pid}) do
+    pid
+    |> Instance.verify()
+    |> raise_verification_error()
   end
 
   @doc """
@@ -146,7 +187,49 @@ defmodule Passby do
   end
 
   @doc """
-  Adds an expectation that will be called at most once for any request.
+  Expects the passed function to be called exactly `count` times, regardless of
+  the route.
+
+  ## Examples
+
+      Passby.expect(bypass, 3, fn conn ->
+        Passby.Conn.resp(conn, 200, "OK")
+      end)
+
+  """
+  @spec expect(t(), pos_integer(), (Conn.t() -> any())) :: :ok
+  def expect(%__MODULE__{pid: pid}, count, fun)
+      when is_integer(count) and count > 0 and is_function(fun, 1) do
+    Instance.expect(pid, count, nil, nil, fun)
+  end
+
+  @doc """
+  Expects the passed function to be called exactly `count` times for a specific
+  method and path.
+
+  ## Examples
+
+      Passby.expect(bypass, "POST", "/events", 2, fn conn ->
+        Passby.Conn.resp(conn, 202, "")
+      end)
+
+  """
+  @spec expect(
+          t(),
+          String.t() | atom() | nil,
+          String.t() | nil,
+          pos_integer(),
+          (Conn.t() -> any())
+        ) :: :ok
+  def expect(%__MODULE__{pid: pid}, method, path, count, fun)
+      when (is_binary(method) or is_atom(method) or is_nil(method)) and
+             (is_binary(path) or is_nil(path)) and is_integer(count) and count > 0 and
+             is_function(fun, 1) do
+    Instance.expect(pid, count, method, path, fun)
+  end
+
+  @doc """
+  Adds an expectation that must be called exactly once, regardless of the route.
   """
   @spec expect_once(t(), (Conn.t() -> any())) :: :ok
   def expect_once(%__MODULE__{pid: pid}, fun) when is_function(fun, 1) do
@@ -154,7 +237,7 @@ defmodule Passby do
   end
 
   @doc """
-  Adds an expectation that will be called at most once for a specific method and path.
+  Adds an expectation that must be called exactly once for a specific method and path.
 
   ## Examples
 
@@ -181,7 +264,18 @@ defmodule Passby do
   end
 
   @doc """
-  Clears all expectations and stubs configured on the `Passby` instance.
+  Makes the instance pass verification, whatever its expectations recorded.
+
+  Useful when the request is issued from a process the test cannot await, or
+  when a handler is expected to fail on purpose.
+
+  ## Examples
+
+      Passby.expect(bypass, fn conn ->
+        Passby.pass(bypass)
+        Passby.Conn.resp(conn, 200, "")
+      end)
+
   """
   @spec pass(t()) :: :ok
   def pass(%__MODULE__{pid: pid}) do
@@ -238,6 +332,85 @@ defmodule Passby do
   defdelegate send_resp(conn), to: Conn
 
   # Private Helpers
+
+  defp start_instance(opts) do
+    opts = Keyword.put(opts, :caller, self())
+
+    case DynamicSupervisor.start_child(Passby.InstanceSupervisor, {Instance, opts}) do
+      {:ok, pid} -> {:ok, pid}
+      {:ok, pid, _info} -> {:ok, pid}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp setup_verification(%__MODULE__{pid: pid}, opts) do
+    if Keyword.get(opts, :verify, true) and register_on_exit(pid) do
+      Instance.arm_verification(pid)
+    end
+
+    :ok
+  end
+
+  # Verification hooks into ExUnit through `on_exit/2`, which ships with Elixir
+  # and so costs no dependency. Outside a test process there is nothing to hook
+  # into: the instance keeps its "dies with its caller" lifecycle, and
+  # verification is left to `verify_expectations!/1`.
+  defp register_on_exit(pid) do
+    if Code.ensure_loaded?(ExUnit.Callbacks) do
+      ExUnit.Callbacks.on_exit({__MODULE__, pid}, fn ->
+        pid
+        |> Instance.on_exit()
+        |> raise_verification_error()
+      end)
+
+      true
+    else
+      false
+    end
+  rescue
+    _exception -> false
+  catch
+    :exit, _reason -> false
+  end
+
+  defp raise_verification_error(:ok), do: :ok
+
+  defp raise_verification_error({:exit, {kind, reason, stacktrace}}) do
+    :erlang.raise(kind, reason, stacktrace)
+  end
+
+  defp raise_verification_error(error) do
+    message = verification_message(error)
+
+    if Code.ensure_loaded?(ExUnit.AssertionError) do
+      raise ExUnit.AssertionError, message
+    else
+      raise message
+    end
+  end
+
+  defp verification_message({:error, :too_many_requests, route}) do
+    "Expected only one HTTP request for Passby#{at(route)}"
+  end
+
+  defp verification_message({:error, {:unexpected_request_number, expected, actual}, route}) do
+    "Expected #{expected} HTTP requests for Passby#{at(route)}, got #{actual}"
+  end
+
+  defp verification_message({:error, :unexpected_request, route}) do
+    "Passby got an HTTP request but wasn't expecting one#{at(route)}"
+  end
+
+  defp verification_message({:error, :not_called, route}) do
+    "No HTTP request arrived at Passby#{at(route)}"
+  end
+
+  defp verification_message({:error, :instance_not_running}) do
+    "The Passby instance is no longer running, so its expectations could not be verified"
+  end
+
+  defp at({:any, :any}), do: ""
+  defp at({method, path}), do: " at #{method} #{path}"
 
   defp build_url(opts, port) do
     host =

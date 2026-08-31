@@ -29,7 +29,7 @@ defmodule Passby.MixProject do
     [
       plt_local_path: ".plts",
       plt_core_path: ".plts",
-      plt_add_apps: [:inets, :ssl, :public_key, :logger],
+      plt_add_apps: [:inets, :ssl, :public_key, :logger, :ex_unit],
       flags: [:error_handling, :unknown]
     ]
   end

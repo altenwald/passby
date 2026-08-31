@@ -5,10 +5,12 @@ defmodule BypassCompatTest do
   adapted to the `Passby` API.
 
   Each Bypass test maps to a test here. Where `Passby` behaves like Bypass, the
-  assertion is the same. Where `Passby` does not implement a Bypass feature yet,
-  the test lives in a `"... — not implemented"` block, asserts Passby's *actual*
-  current behaviour, and the comment states what Bypass does instead. Nothing
-  Bypass tests is left unmentioned.
+  assertion is the same. Where it deliberately differs, the comment states what
+  Bypass does instead. Nothing Bypass tests is left unmentioned.
+
+  Tests that assert a verification failure open the instance with
+  `verify: false` and call `Passby.verify_expectations!/1` themselves, so that
+  the expected failure does not fail this suite.
   """
 
   use ExUnit.Case, async: true
@@ -116,26 +118,67 @@ defmodule BypassCompatTest do
   # ---------------------------------------------------------------------------
   # Bypass: "Bypass.expect raises if no request is made" (+ expect_once)
   # ---------------------------------------------------------------------------
-  describe "unmet expectations — not implemented" do
-    # Bypass installs an on_exit handler that raises {:error, :not_called, ...}
-    # when an `expect`/`expect_once` never receives a request. Passby has NO
-    # automatic verification: a never-called expectation simply does nothing.
-    test "a never-called expect/2 does not fail the test" do
+  describe "unmet expectations" do
+    test "a never-called expect/2 fails verification" do
+      bypass = Passby.open(verify: false)
+      Passby.expect(bypass, fn _conn -> flunk("must not be called") end)
+
+      assert_raise ExUnit.AssertionError, ~r/No HTTP request arrived at Passby/, fn ->
+        Passby.verify_expectations!(bypass)
+      end
+    end
+
+    test "a never-called expect_once/2 fails verification" do
+      bypass = Passby.open(verify: false)
+      Passby.expect_once(bypass, fn _conn -> flunk("must not be called") end)
+
+      assert_raise ExUnit.AssertionError, ~r/No HTTP request arrived at Passby/, fn ->
+        Passby.verify_expectations!(bypass)
+      end
+    end
+
+    test "a never-called route expectation names the route" do
+      bypass = Passby.open(verify: false)
+      Passby.expect(bypass, "POST", "/that", fn _conn -> flunk("must not be called") end)
+
+      assert_raise ExUnit.AssertionError,
+                   ~r|No HTTP request arrived at Passby at POST /that|,
+                   fn -> Passby.verify_expectations!(bypass) end
+    end
+
+    # Bypass keys its on_exit handler by {Bypass, pid} so that a test can
+    # replace it and assert the raw result. Passby keys its own by
+    # {Passby, pid}, which is what makes this replacement possible.
+    test "open/1 registers the verification, and it can be replaced" do
       bypass = Passby.open()
       Passby.expect(bypass, fn _conn -> flunk("must not be called") end)
-      assert is_pid(bypass.pid)
+
+      ExUnit.Callbacks.on_exit({Passby, bypass.pid}, fn ->
+        assert {:error, :not_called, {:any, :any}} = Passby.Instance.on_exit(bypass.pid)
+      end)
     end
 
-    test "a never-called expect_once/2 does not fail the test" do
+    test "the registered verification actually runs when the test exits" do
+      # Callbacks run in reverse registration order, so this one runs after the
+      # callback Passby.open/1 is about to install. The agent is unlinked so it
+      # outlives the test process and can carry the pid across.
+      {:ok, holder} = Agent.start(fn -> nil end)
+
+      ExUnit.Callbacks.on_exit(fn ->
+        pid = Agent.get(holder, & &1)
+        refute Process.alive?(pid), "Passby.open/1 never installed its verification callback"
+        Agent.stop(holder)
+      end)
+
       bypass = Passby.open()
-      Passby.expect_once(bypass, fn _conn -> flunk("must not be called") end)
-      assert is_pid(bypass.pid)
+      Agent.update(holder, fn _ -> bypass.pid end)
+      Passby.stub(bypass, "GET", "/x", &Passby.Conn.resp(&1, 200, ""))
     end
 
-    test "Passby exposes no verify_expectations!/1" do
-      # Bypass: `Bypass.verify_expectations!/1` exists (ESpec) and the ExUnit
-      # variant raises "Not available in ExUnit, ...". Passby has neither.
-      refute function_exported?(Passby, :verify_expectations!, 1)
+    test "verification can be turned off entirely" do
+      bypass = Passby.open(verify: false)
+      Passby.expect(bypass, fn _conn -> flunk("must not be called") end)
+      assert is_pid(bypass.pid)
     end
   end
 
@@ -143,25 +186,38 @@ defmodule BypassCompatTest do
   # Bypass: "Bypass.expect can be made to pass by calling Bypass.pass" (+ once)
   #         "Calling a bypass route without expecting a call fails the test"
   # ---------------------------------------------------------------------------
-  describe "pass/1 and unmatched routes — not implemented" do
-    # Bypass: `pass/1` marks the current request as "arrived" so the exit
-    # verification succeeds even if the handler never sends a response.
-    # Passby: `pass/1` clears every expectation and stub on the instance.
-    test "pass/1 clears expectations, so a later request falls through to 500" do
+  describe "pass/1 and unmatched routes" do
+    test "pass/1 makes an uncalled expectation verify, and keeps serving it" do
       bypass = Passby.open()
       Passby.expect(bypass, "GET", "/x", fn conn -> Passby.Conn.resp(conn, 200, "hit") end)
 
       Passby.pass(bypass)
 
-      assert {:ok, 500, body} = request(bypass.port, "/x", :get)
-      assert body =~ "No expectation"
+      assert Passby.verify_expectations!(bypass) == :ok
+      assert {:ok, 200, "hit"} = request(bypass.port, "/x", :get)
     end
 
-    # Bypass: an unexpected request returns 500 AND the exit handler raises
-    # {:error, :unexpected_request, ...}. Passby: 500 only, no test failure.
-    test "calling a route with no expectation returns 500 and does not fail the test" do
+    # The Bypass idiom: a handler that is expected to blow up.
+    test "pass/1 from inside a handler covers the handler's own failure" do
       bypass = Passby.open()
+
+      Passby.expect(bypass, "GET", "/x", fn _conn ->
+        Passby.pass(bypass)
+        flunk("intentional failure")
+      end)
+
+      assert capture_log(fn ->
+               assert {:ok, 500, _body} = request(bypass.port, "/x", :get)
+             end) =~ "intentional failure"
+    end
+
+    test "calling a route with no expectation returns 500 and fails verification" do
+      bypass = Passby.open(verify: false)
       assert {:ok, 500, _body} = request(bypass.port)
+
+      assert_raise ExUnit.AssertionError,
+                   ~r|Passby got an HTTP request but wasn't expecting one at POST /example_path|,
+                   fn -> Passby.verify_expectations!(bypass) end
     end
   end
 
@@ -177,12 +233,19 @@ defmodule BypassCompatTest do
       closing_in_flight(:expect_once)
     end
 
-    defp closing_in_flight(expect_fun) do
+    test "the Bypass idiom, pass/1 then down/1 from the handler",
+      do: closing_in_flight(:expect, true)
+
+    defp closing_in_flight(expect_fun, pass_first \\ false) do
       bypass = Passby.open()
 
       apply(Passby, expect_fun, [
         bypass,
         fn conn ->
+          # Bypass's own test passes first, because its `down/1` waits for
+          # in-flight handlers and `pass/1` is what releases them. Passby waits
+          # too, but never for the handler asking, so both orders work.
+          if pass_first, do: Passby.pass(bypass)
           Passby.down(bypass)
           conn
         end
@@ -196,11 +259,8 @@ defmodule BypassCompatTest do
   # Bypass: "Bypass.down waits for plug process to terminate ..." (+ once)
   #         "Concurrent calls to down"
   # ---------------------------------------------------------------------------
-  describe "down/1 graceful termination — not implemented" do
-    # Bypass: `down/1` blocks until any in-flight handler process finishes.
-    # Passby: `down/1` closes the listening socket immediately; a handler that
-    # is still running keeps running on its own (detached) process.
-    test "down/1 returns immediately even while a slow handler is running" do
+  describe "down/1 graceful termination" do
+    test "down/1 waits for a handler that is still running" do
       test_pid = self()
       ref = make_ref()
       bypass = Passby.open()
@@ -218,10 +278,9 @@ defmodule BypassCompatTest do
       Passby.down(bypass)
       elapsed = System.monotonic_time(:millisecond) - t0
 
-      # Bypass would block ~120ms here waiting for the handler; Passby does not.
-      assert elapsed < 100
-      # The detached handler still completes.
-      assert_receive ^ref, 500
+      # The handler ran to completion before the socket was closed.
+      assert_received ^ref
+      assert elapsed >= 100
     end
 
     test "concurrent calls to down/1 are safe" do
@@ -259,7 +318,7 @@ defmodule BypassCompatTest do
     end
 
     test "expect_once serves exactly one of several concurrent requests" do
-      bypass = Passby.open()
+      bypass = Passby.open(verify: false)
       parent = self()
 
       Passby.expect_once(bypass, fn conn ->
@@ -273,6 +332,11 @@ defmodule BypassCompatTest do
 
       assert_receive :request_received
       refute_receive :request_received
+
+      # The requests that were turned away fail verification, as in Bypass.
+      assert_raise ExUnit.AssertionError,
+                   ~r/Expected only one HTTP request for Passby/,
+                   fn -> Passby.verify_expectations!(bypass) end
     end
   end
 
@@ -280,16 +344,66 @@ defmodule BypassCompatTest do
   # Bypass: "Bypass.expect/3 fails when too many / not enough requests arrived"
   #         "Bypass.expect/5 fails when too many / not enough requests arrived"
   # ---------------------------------------------------------------------------
-  describe "expected request counts — not implemented" do
-    # Bypass: `expect(bypass, n, fun)` and `expect(bypass, m, p, n, fun)` assert
-    # exactly `n` requests arrive. Passby has no counted arity: `expect/2,4` is
-    # "one or more, unverified" and `expect_once/2,4` is "at most once".
-    test "there is no counted expect arity" do
-      refute function_exported?(Passby, :expect, 3)
-      refute function_exported?(Passby, :expect, 5)
+  describe "expected request counts" do
+    test "expect/3 fails when not enough requests arrived" do
+      bypass = Passby.open(verify: false)
+      Passby.expect(bypass, 2, fn conn -> Passby.Conn.resp(conn, 200, "ok") end)
+
+      assert {:ok, 200, "ok"} = request(bypass.port)
+
+      assert_raise ExUnit.AssertionError,
+                   ~r/Expected 2 HTTP requests for Passby, got 1/,
+                   fn -> Passby.verify_expectations!(bypass) end
+
+      assert {:ok, 200, "ok"} = request(bypass.port)
+      assert Passby.verify_expectations!(bypass) == :ok
     end
 
-    test "expect/2 keeps serving every request (no upper bound, no verification)" do
+    test "expect/3 fails when too many requests arrived" do
+      bypass = Passby.open(verify: false)
+      Passby.expect(bypass, 1, fn conn -> Passby.Conn.resp(conn, 200, "ok") end)
+
+      assert {:ok, 200, "ok"} = request(bypass.port)
+      assert {:ok, 500, _} = request(bypass.port)
+
+      assert_raise ExUnit.AssertionError,
+                   ~r/Expected 1 HTTP requests for Passby, got 2/,
+                   fn -> Passby.verify_expectations!(bypass) end
+    end
+
+    test "every excess request is counted, not just the first" do
+      bypass = Passby.open(verify: false)
+      Passby.expect(bypass, 2, fn conn -> Passby.Conn.resp(conn, 200, "ok") end)
+
+      for _ <- 1..5, do: request(bypass.port)
+
+      assert_raise ExUnit.AssertionError,
+                   ~r/Expected 2 HTTP requests for Passby, got 5/,
+                   fn -> Passby.verify_expectations!(bypass) end
+    end
+
+    test "expect/5 counts requests per route" do
+      bypass = Passby.open(verify: false)
+
+      Passby.expect(bypass, "GET", "/foo", 2, fn conn -> Passby.Conn.resp(conn, 200, "ok") end)
+
+      assert {:ok, 200, "ok"} = request(bypass.port, "/foo", :get)
+
+      assert_raise ExUnit.AssertionError,
+                   ~r|Expected 2 HTTP requests for Passby at GET /foo, got 1|,
+                   fn -> Passby.verify_expectations!(bypass) end
+
+      assert {:ok, 200, "ok"} = request(bypass.port, "/foo", :get)
+      assert Passby.verify_expectations!(bypass) == :ok
+
+      assert {:ok, 500, _} = request(bypass.port, "/foo", :get)
+
+      assert_raise ExUnit.AssertionError,
+                   ~r|Expected 2 HTTP requests for Passby at GET /foo, got 3|,
+                   fn -> Passby.verify_expectations!(bypass) end
+    end
+
+    test "expect/4 keeps serving every request, one or more" do
       bypass = Passby.open()
       Passby.expect(bypass, "GET", "/foo", fn conn -> Passby.Conn.resp(conn, 200, "ok") end)
 
@@ -298,12 +412,16 @@ defmodule BypassCompatTest do
       end
     end
 
-    test "expect_once/2 serves the first request then falls through to 500" do
-      bypass = Passby.open()
+    test "expect_once/4 serves the first request, then 500s and fails verification" do
+      bypass = Passby.open(verify: false)
       Passby.expect_once(bypass, "GET", "/foo", fn conn -> Passby.Conn.resp(conn, 200, "ok") end)
 
       assert {:ok, 200, "ok"} = request(bypass.port, "/foo", :get)
       assert {:ok, 500, _} = request(bypass.port, "/foo", :get)
+
+      assert_raise ExUnit.AssertionError,
+                   ~r|Expected only one HTTP request for Passby at GET /foo|,
+                   fn -> Passby.verify_expectations!(bypass) end
     end
   end
 
@@ -381,9 +499,20 @@ defmodule BypassCompatTest do
   # Bypass: "All routes to a Bypass.expect(_once)/4 call must be called"
   # ---------------------------------------------------------------------------
   describe "multiple registered routes" do
-    # Bypass additionally raises {:error, :not_called, {"POST", "/that"}} on exit
-    # because /that was never called. Passby does not verify; but each route
-    # must still match independently when it *is* called.
+    test "every registered route must be called" do
+      bypass = Passby.open(verify: false)
+
+      for path <- ["/this", "/that"] do
+        Passby.expect(bypass, "POST", path, fn conn -> Passby.Conn.resp(conn, 200, path) end)
+      end
+
+      assert {:ok, 200, "/this"} = request(bypass.port, "/this", :post)
+
+      assert_raise ExUnit.AssertionError,
+                   ~r|No HTTP request arrived at Passby at POST /that|,
+                   fn -> Passby.verify_expectations!(bypass) end
+    end
+
     test "each of several registered routes matches independently" do
       bypass = Passby.open()
 
@@ -434,12 +563,50 @@ defmodule BypassCompatTest do
   # ---------------------------------------------------------------------------
   # Bypass: "Bypass.verify_expectations! - with ExUnit / with ESpec"
   # ---------------------------------------------------------------------------
-  describe "verify_expectations! — not implemented" do
-    # Bypass ships `verify_expectations!/1` (a no-op-then-raise under ExUnit,
-    # a real check under ESpec) plus a configurable `:test_framework`. Passby
-    # ships none of this.
-    test "no verify_expectations!/1 and no ESpec integration" do
-      refute function_exported?(Passby, :verify_expectations!, 1)
+  # ---------------------------------------------------------------------------
+  # Bypass: precedence in Bypass.Instance.expectation_problem_message/1
+  # ---------------------------------------------------------------------------
+  describe "which failure is reported" do
+    test "a route that was never called beats a route that got too many" do
+      bypass = Passby.open(verify: false)
+      Passby.expect_once(bypass, "GET", "/a", fn conn -> Passby.Conn.resp(conn, 200, "") end)
+      Passby.expect(bypass, "GET", "/b", fn conn -> Passby.Conn.resp(conn, 200, "") end)
+
+      assert {:ok, 200, ""} = request(bypass.port, "/a", :get)
+      assert {:ok, 500, _} = request(bypass.port, "/a", :get)
+
+      assert_raise ExUnit.AssertionError,
+                   ~r|No HTTP request arrived at Passby at GET /b|,
+                   fn -> Passby.verify_expectations!(bypass) end
+    end
+
+    test "a request for an undeclared route beats everything" do
+      bypass = Passby.open(verify: false)
+      Passby.expect(bypass, "GET", "/b", fn conn -> Passby.Conn.resp(conn, 200, "") end)
+
+      assert {:ok, 500, _} = request(bypass.port, "/nowhere", :get)
+
+      assert_raise ExUnit.AssertionError,
+                   ~r|Passby got an HTTP request but wasn't expecting one at GET /nowhere|,
+                   fn -> Passby.verify_expectations!(bypass) end
+    end
+  end
+
+  describe "verify_expectations!" do
+    # Bypass ships `verify_expectations!/1` for ESpec only: under ExUnit it
+    # raises "Not available in ExUnit, as it's configured automatically."
+    # Passby runs the same check in both cases, so a test can also assert
+    # mid-test. There is no `:test_framework` setting to configure.
+    test "verifies on demand without stopping the instance" do
+      bypass = Passby.open(verify: false)
+      Passby.expect(bypass, "GET", "/foo", fn conn -> Passby.Conn.resp(conn, 200, "ok") end)
+
+      assert_raise ExUnit.AssertionError,
+                   ~r|No HTTP request arrived at Passby at GET /foo|,
+                   fn -> Passby.verify_expectations!(bypass) end
+
+      assert {:ok, 200, "ok"} = request(bypass.port, "/foo", :get)
+      assert Passby.verify_expectations!(bypass) == :ok
     end
   end
 
