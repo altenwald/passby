@@ -145,20 +145,21 @@ defmodule PassbyTest do
     assert {:ok, {{_, 200, _}, _, ~c"healthy"}} = http_get(url)
   end
 
-  test "pass/1 resets all expectations" do
+  test "pass/1 makes verification succeed without dropping the expectation" do
     bypass = Passby.open()
 
-    Passby.expect(bypass, "GET", "/reset", fn conn ->
-      Passby.Conn.resp(conn, 200, "before reset")
+    Passby.expect_once(bypass, "GET", "/reset", fn conn ->
+      Passby.Conn.resp(conn, 200, "served")
     end)
-
-    url = "http://127.0.0.1:#{bypass.port}/reset"
-    assert {:ok, {{_, 200, _}, _, ~c"before reset"}} = http_get(url)
 
     Passby.pass(bypass)
 
-    # After pass, no expectation is set, returns 500
-    assert {:ok, {{_, 500, _}, _, _}} = http_get(url)
+    # The expectation was never called, yet verification passes.
+    assert Passby.verify_expectations!(bypass) == :ok
+
+    # And it is still installed.
+    url = "http://127.0.0.1:#{bypass.port}/reset"
+    assert {:ok, {{_, 200, _}, _, ~c"served"}} = http_get(url)
   end
 
   test "down/1 and up/1 simulate network outage and recovery" do
@@ -305,7 +306,7 @@ defmodule PassbyTest do
   end
 
   test "a route pattern does not match when the segment count differs" do
-    bypass = Passby.open()
+    bypass = Passby.open(verify: false)
 
     Passby.expect(bypass, "GET", "/users/:id", fn conn ->
       Passby.Conn.resp(conn, 200, "matched")
@@ -342,7 +343,7 @@ defmodule PassbyTest do
   end
 
   test "handles handler exceptions gracefully by responding with 500" do
-    bypass = Passby.open()
+    bypass = Passby.open(verify: false)
 
     Passby.expect(bypass, "GET", "/crash", fn _conn ->
       raise "intentional crash in test"
@@ -350,10 +351,16 @@ defmodule PassbyTest do
 
     url = "http://127.0.0.1:#{bypass.port}/crash"
     assert {:ok, {{_, 500, _}, _, ~c"Internal Server Error in Passby Handler"}} = http_get(url)
+
+    # The client saw a 500, but the error is not swallowed: it is re-raised,
+    # with its original stacktrace, when the expectations are verified.
+    assert_raise RuntimeError, "intentional crash in test", fn ->
+      Passby.verify_expectations!(bypass)
+    end
   end
 
   test "returns 500 when no expectation matches" do
-    bypass = Passby.open()
+    bypass = Passby.open(verify: false)
 
     url = "http://127.0.0.1:#{bypass.port}/unmatched"
     assert {:ok, {{_, 500, _}, _, body}} = http_get(url)
@@ -405,7 +412,7 @@ defmodule PassbyTest do
   end
 
   test "handles handler throw and exit gracefully" do
-    bypass = Passby.open()
+    bypass = Passby.open(verify: false)
 
     Passby.expect(bypass, "GET", "/throw", fn _conn ->
       throw(:intentional_throw)
@@ -413,6 +420,19 @@ defmodule PassbyTest do
 
     url = "http://127.0.0.1:#{bypass.port}/throw"
     assert {:ok, {{_, 500, _}, _, ~c"Internal Server Error in Passby Handler"}} = http_get(url)
+
+    assert catch_throw(Passby.verify_expectations!(bypass)) == :intentional_throw
+  end
+
+  test "handles a handler exiting" do
+    bypass = Passby.open(verify: false)
+
+    Passby.expect(bypass, "GET", "/exit", fn _conn -> exit(:intentional_exit) end)
+
+    url = "http://127.0.0.1:#{bypass.port}/exit"
+    assert {:ok, {{_, 500, _}, _, ~c"Internal Server Error in Passby Handler"}} = http_get(url)
+
+    assert catch_exit(Passby.verify_expectations!(bypass)) == :intentional_exit
   end
 
   test "handles client connecting and closing socket immediately" do
@@ -467,7 +487,9 @@ defmodule PassbyTest do
   end
 
   test "terminates instance process cleanly" do
-    bypass = Passby.open()
+    # Stopping the instance by hand means opting out of verification: an
+    # instance that is gone can no longer report on its expectations.
+    bypass = Passby.open(verify: false)
     assert Process.alive?(bypass.pid)
     GenServer.stop(bypass.pid)
     refute Process.alive?(bypass.pid)

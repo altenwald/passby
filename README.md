@@ -16,12 +16,13 @@ A **100% Elixir, 0-dependency** mock HTTP server designed for testing HTTP clien
 ## Features
 
 - **0 Runtime Dependencies**: Built entirely on standard Erlang/OTP (`:gen_tcp`, `:inet`, `:erlang.decode_packet`) and standard Elixir.
-- **Drop-in Bypass API**: Identical function signatures (`open/1`, `expect/2,4`, `expect_once/2,4`, `stub/4`, `pass/1`, `down/1`, `up/1`).
+- **Drop-in Bypass API**: Identical function signatures (`open/1`, `expect/2,3,4,5`, `expect_once/2,4`, `stub/4`, `pass/1`, `down/1`, `up/1`, `verify_expectations!/1`).
+- **Automatic Verification**: Expectations are checked when the test exits, so an expectation that never receives its request fails the test instead of passing silently. Errors raised inside a handler are re-raised too, rather than being swallowed by the `500` the client receives.
 - **Plug.Conn Compatibility**: `Passby.Conn` implements the same fields and helper functions (`resp/3`, `send_resp/1`, `get_req_header/2`, `put_resp_header/3`, `fetch_query_params/1`).
 - **Params Parsing**: `conn.query_params` and `conn.params` are decoded exactly like `Bypass`/`Plug` do, including bracket notation (`filter[name]=Manuel` becomes `%{"filter" => %{"name" => "Manuel"}}`) and lists (`tags[]=a&tags[]=b`).
 - **Route Patterns**: paths accept `:param` segments (`/users/:id`); captured values land in `conn.path_params` and are merged into `conn.params`, just like `Bypass`.
 - **Concurrent & Isolated**: Each test can spin up its own instance on an ephemeral dynamic port.
-- **Outage Simulation**: Easily simulate network disconnects and connection-refused errors with `Passby.down/1` and `Passby.up/1`.
+- **Outage Simulation**: Easily simulate network disconnects and connection-refused errors with `Passby.down/1` and `Passby.up/1`. `down/1` waits for the handlers still in flight, so closing the socket cannot truncate a response the client is still reading.
 
 ---
 
@@ -61,6 +62,59 @@ defmodule MyClientTest do
   end
 end
 ```
+
+---
+
+## Verification
+
+Expectations are verified when the test that opened the instance finishes:
+
+| Declaration | Requests it must receive |
+| --- | --- |
+| `expect/2,4` | one or more |
+| `expect_once/2,4` | exactly one |
+| `expect/3,5` | exactly the given count |
+| `stub/4` | any number, including none |
+
+A request matching no expectation answers `500` and fails the test, and an
+error raised inside a handler (a failed `assert`, say) is re-raised with its
+original stacktrace when the expectations are verified.
+
+```elixir
+test "the client retries once" do
+  bypass = Passby.open()
+
+  Passby.expect(bypass, "GET", "/flaky", 2, fn conn ->
+    Passby.Conn.resp(conn, 500, "")
+  end)
+
+  MyClient.get("#{bypass.url}/flaky")
+  # Fails the test if the client did not retry exactly once.
+end
+```
+
+`Passby.pass/1` opts an instance out of verification, for when the request is
+issued by a process the test cannot await, or when a handler is meant to fail:
+
+```elixir
+Passby.expect(bypass, fn conn ->
+  Passby.pass(bypass)
+  Passby.Conn.resp(conn, 200, "")
+end)
+```
+
+Verification is automatic under ExUnit, through `ExUnit.Callbacks.on_exit/2`,
+which ships with Elixir, so it adds no dependency. Under any other test
+framework, call `Passby.verify_expectations!/1` yourself. Passing
+`verify: false` to `Passby.open/1` turns off the automatic check and leaves
+`verify_expectations!/1` as the only way to run it. Use it when `Passby` is a
+plain fake server rather than a test double, and when a test needs to assert a
+verification failure without failing itself.
+
+Verification waits for the handlers still running when it starts. One that has
+not returned yet may still fail, and a request whose handler was killed was
+never actually answered. `Passby.pass/1` releases them along with the
+expectations.
 
 ---
 
@@ -108,22 +162,21 @@ end)
 `test/bypass_compat_test.exs` ports every scenario from the `Bypass` test suite.
 The following API is supported with identical semantics:
 
-`open/1`, `expect/2`, `expect/4`, `expect_once/2`, `expect_once/4`, `stub/4`,
-`pass/1`, `down/1`, `up/1`, `:param` route patterns, `conn.params` /
-`conn.query_params` / `conn.path_params` / `conn.port`, and route redefinition
-(last definition wins).
+`open/1`, `expect/2`, `expect/3`, `expect/4`, `expect/5`, `expect_once/2`,
+`expect_once/4`, `stub/4`, `pass/1`, `down/1` (including waiting for in-flight
+handlers), `up/1`, `verify_expectations!/1`, automatic verification on test
+exit, `:param` route patterns, `conn.params` / `conn.query_params` /
+`conn.path_params` / `conn.port`, and route redefinition (last definition
+wins).
 
-The following `Bypass` behaviour is **not yet implemented** in `Passby`
-(`test/bypass_compat_test.exs` covers each of these, asserting the current
-behaviour):
+The following differs from `Bypass` on purpose
+(`test/bypass_compat_test.exs` covers each of these):
 
 | Bypass | Passby (current) |
 | --- | --- |
-| Automatic verification on test exit (`expect` raises if never called, `expect_once` raises if called twice) | No automatic verification; an unmet expectation is ignored and an unexpected request returns `500` |
-| `verify_expectations!/1` and the `:test_framework` / ESpec integration | Not implemented |
-| `expect/3` and `expect/5` with an exact expected request count | Not implemented (`expect` is "one or more", `expect_once` is "at most once") |
-| `pass/1` marks the in-flight request as arrived | `pass/1` clears every expectation and stub |
-| `down/1` blocks until in-flight handlers finish | `down/1` closes the listening socket immediately |
+| `verify_expectations!/1` raises "Not available in ExUnit, as it's configured automatically", and the `:test_framework` setting selects ExUnit or ESpec | `verify_expectations!/1` runs the check under any framework, so it can also assert mid-test, and it does not stop the instance; ExUnit is detected at `open/1` and there is no `:test_framework` setting |
+| `pass/1` must be called before `down/1` inside a handler, or `down/1` waits for the handler that is calling it | A handler never waits for itself, so either order works |
+| Errors carry the route only when one was declared; an unexpected request reports `{:any, :any}` | An unexpected request reports the method and path that actually arrived |
 
 ---
 
