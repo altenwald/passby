@@ -22,16 +22,18 @@ defmodule Passby.HttpParser do
          {:ok, body} <- read_body(socket, headers, body_buffer, timeout) do
       {method, path, query_string, path_info} = parse_request_line(request_line)
 
-      conn = %Conn{
-        adapter: {Passby, socket},
-        method: method,
-        request_path: path,
-        path_info: path_info,
-        query_string: query_string,
-        req_headers: headers,
-        req_body: body,
-        state: :unset
-      }
+      conn =
+        %Conn{
+          adapter: {Passby, socket},
+          method: method,
+          request_path: path,
+          path_info: path_info,
+          query_string: query_string,
+          req_headers: headers,
+          req_body: body,
+          state: :unset
+        }
+        |> Conn.fetch_query_params()
 
       {:ok, conn}
     end

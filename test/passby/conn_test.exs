@@ -35,6 +35,47 @@ defmodule Passby.ConnTest do
     assert ^conn = Conn.send_resp(conn)
   end
 
+  test "a fresh conn has empty params, query_params and path_params" do
+    conn = %Conn{}
+    assert conn.params == %{}
+    assert conn.query_params == %{}
+    assert conn.path_params == %{}
+  end
+
+  test "fetch_query_params/1 decodes the query string into query_params and params" do
+    conn = Conn.fetch_query_params(%Conn{query_string: "q=elixir&page=2"})
+    assert conn.query_params == %{"q" => "elixir", "page" => "2"}
+    assert conn.params == %{"q" => "elixir", "page" => "2"}
+  end
+
+  test "fetch_query_params/1 decodes bracket notation like Plug does" do
+    conn = Conn.fetch_query_params(%Conn{query_string: "filter[name]=Manuel"})
+    assert conn.query_params == %{"filter" => %{"name" => "Manuel"}}
+    assert conn.params == %{"filter" => %{"name" => "Manuel"}}
+  end
+
+  test "fetch_query_params/1 with an empty query string yields empty maps" do
+    conn = Conn.fetch_query_params(%Conn{query_string: ""})
+    assert conn.query_params == %{}
+    assert conn.params == %{}
+  end
+
+  test "fetch_query_params/1 keeps pre-existing params, letting them win over query params" do
+    conn =
+      Conn.fetch_query_params(%Conn{
+        query_string: "id=from_query&extra=1",
+        params: %{"id" => "from_path"}
+      })
+
+    assert conn.query_params == %{"id" => "from_query", "extra" => "1"}
+    assert conn.params == %{"id" => "from_path", "extra" => "1"}
+  end
+
+  test "fetch_query_params/2 accepts an options argument for Plug compatibility" do
+    conn = Conn.fetch_query_params(%Conn{query_string: "a=1"}, length: 1_000_000)
+    assert conn.query_params == %{"a" => "1"}
+  end
+
   test "send_resp/1 formats various reason phrases properly" do
     for {status, _reason} <- [
           {200, "OK"},

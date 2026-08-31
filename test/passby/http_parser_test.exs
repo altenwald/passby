@@ -30,6 +30,35 @@ defmodule Passby.HttpParserTest do
     assert conn.query_string == "foo=bar"
     assert conn.path_info == ["api", "test"]
     assert conn.req_body == "ping"
+    assert conn.query_params == %{"foo" => "bar"}
+    assert conn.params == %{"foo" => "bar"}
+  end
+
+  test "auto-populates query_params and params with bracket notation decoded" do
+    {:ok, listen} = :gen_tcp.listen(0, [:binary, packet: :raw, active: false, reuseaddr: true])
+    {:ok, port} = :inet.port(listen)
+
+    parent = self()
+
+    spawn_link(fn ->
+      {:ok, client} = :gen_tcp.accept(listen)
+      res = HttpParser.parse_request(client)
+      send(parent, {:parsed, res})
+      :gen_tcp.close(client)
+      :gen_tcp.close(listen)
+    end)
+
+    {:ok, client} = :gen_tcp.connect(~c"127.0.0.1", port, [:binary, active: false])
+
+    raw_req =
+      "GET /search?filter[name]=Manuel&tags[]=a&tags[]=b HTTP/1.1\r\nHost: localhost\r\n\r\n"
+
+    :ok = :gen_tcp.send(client, raw_req)
+    :gen_tcp.close(client)
+
+    assert_receive {:parsed, {:ok, conn}}, 1000
+    assert conn.query_params == %{"filter" => %{"name" => "Manuel"}, "tags" => ["a", "b"]}
+    assert conn.params == %{"filter" => %{"name" => "Manuel"}, "tags" => ["a", "b"]}
   end
 
   test "parses request sent across multiple TCP chunks" do

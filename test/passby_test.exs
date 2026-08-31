@@ -247,6 +247,24 @@ defmodule PassbyTest do
     assert {:ok, {{_, 200, _}, _, ~c"found"}} = http_get(url)
   end
 
+  test "decodes bracket-notation query params like Bypass/Plug" do
+    bypass = Passby.open()
+
+    Passby.expect(bypass, "GET", "/search", fn conn ->
+      assert conn.params == %{"filter" => %{"name" => "Manuel"}, "page" => "2"}
+      assert conn.query_params == %{"filter" => %{"name" => "Manuel"}, "page" => "2"}
+      Passby.Conn.resp(conn, 200, "found")
+    end)
+
+    url = "http://127.0.0.1:#{bypass.port}/search?filter%5Bname%5D=Manuel&page=2"
+    assert {:ok, {{_, 200, _}, _, ~c"found"}} = http_get(url)
+  end
+
+  test "Passby.fetch_query_params/1 is available as a delegate" do
+    conn = Passby.fetch_query_params(%Passby.Conn{query_string: "a[b]=c"})
+    assert conn.params == %{"a" => %{"b" => "c"}}
+  end
+
   test "handles large request bodies properly" do
     bypass = Passby.open()
     large_body = String.duplicate("abcdef123456", 5_000)

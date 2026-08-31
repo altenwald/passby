@@ -17,7 +17,8 @@ A **100% Elixir, 0-dependency** mock HTTP server designed for testing HTTP clien
 
 - **0 Runtime Dependencies**: Built entirely on standard Erlang/OTP (`:gen_tcp`, `:inet`, `:erlang.decode_packet`) and standard Elixir.
 - **Drop-in Bypass API**: Identical function signatures (`open/1`, `expect/2,4`, `expect_once/2,4`, `stub/4`, `pass/1`, `down/1`, `up/1`).
-- **Plug.Conn Compatibility**: `Passby.Conn` implements the same fields and helper functions (`resp/3`, `send_resp/1`, `get_req_header/2`, `put_resp_header/3`).
+- **Plug.Conn Compatibility**: `Passby.Conn` implements the same fields and helper functions (`resp/3`, `send_resp/1`, `get_req_header/2`, `put_resp_header/3`, `fetch_query_params/1`).
+- **Params Parsing**: `conn.query_params` and `conn.params` are decoded exactly like `Bypass`/`Plug` do, including bracket notation (`filter[name]=Manuel` becomes `%{"filter" => %{"name" => "Manuel"}}`) and lists (`tags[]=a&tags[]=b`).
 - **Concurrent & Isolated**: Each test can spin up its own instance on an ephemeral dynamic port.
 - **Outage Simulation**: Easily simulate network disconnects and connection-refused errors with `Passby.down/1` and `Passby.up/1`.
 
@@ -30,7 +31,7 @@ Add `passby` to your `mix.exs` dependencies for the `test` environment:
 ```elixir
 def deps do
   [
-    {:passby, "~> 0.1.0", only: :test}
+    {:passby, "~> 0.2.0", only: :test}
   ]
 end
 ```
@@ -66,7 +67,7 @@ end
 
 Migrating from `Bypass` to `Passby` requires zero changes to test logic:
 
-1. Replace `{:bypass, ...}` with `{:passby, "~> 0.1.0", only: :test}` in `mix.exs`.
+1. Replace `{:bypass, ...}` with `{:passby, "~> 0.2.0", only: :test}` in `mix.exs`.
 2. Replace `Bypass.` calls with `Passby.`:
 
 ```elixir
@@ -83,7 +84,11 @@ setup do
 end
 ```
 
-Handlers receive a `%Passby.Conn{}` struct which works seamlessly with either `Passby.Conn` / `Passby` functions or `Plug.Conn` if you have Plug in your project:
+Handlers receive a `%Passby.Conn{}` struct with `query_params` and `params` already
+populated (bracket notation and lists decoded just like `Bypass`). Calling
+`Passby.Conn.fetch_query_params/1` again is a safe no-op, kept for `Plug.Conn` parity.
+
+The struct works seamlessly with either `Passby.Conn` / `Passby` functions or `Plug.Conn` if you have Plug in your project:
 
 ```elixir
 Passby.expect(bypass, "POST", "/messages", fn conn ->

@@ -7,12 +7,19 @@ defmodule Passby.Conn do
   `Plug` as a dependency.
   """
 
+  alias Passby.Conn.Query
+
+  @type params :: %{optional(String.t()) => term()}
+
   @type t :: %__MODULE__{
           adapter: {module(), any()},
           method: String.t(),
           request_path: String.t(),
           path_info: [String.t()],
           query_string: String.t(),
+          params: params(),
+          query_params: params(),
+          path_params: params(),
           req_headers: [{String.t(), String.t()}],
           req_body: binary(),
           status: integer() | nil,
@@ -26,6 +33,9 @@ defmodule Passby.Conn do
             request_path: "/",
             path_info: [],
             query_string: "",
+            params: %{},
+            query_params: %{},
+            path_params: %{},
             req_headers: [],
             req_body: "",
             status: nil,
@@ -54,6 +64,35 @@ defmodule Passby.Conn do
     headers
     |> Enum.filter(fn {k, _v} -> String.downcase(k) == target end)
     |> Enum.map(fn {_k, v} -> v end)
+  end
+
+  @doc """
+  Fetches query parameters from the query string and stores them on the conn.
+
+  Populates `conn.query_params` with the decoded query string and merges the
+  result into `conn.params`. Any params already present on the conn (for
+  example path params) take precedence over query params on key conflicts.
+
+  Bracket notation is decoded the same way `Plug.Conn.Query` decodes it, so
+  `"filter[name]=Manuel"` becomes `%{"filter" => %{"name" => "Manuel"}}`.
+
+  The optional second argument is accepted for `Plug.Conn.fetch_query_params/2`
+  compatibility and is currently ignored.
+
+  ## Examples
+
+      iex> conn = %Passby.Conn{query_string: "filter[name]=Manuel"}
+      iex> conn = Passby.Conn.fetch_query_params(conn)
+      iex> conn.query_params
+      %{"filter" => %{"name" => "Manuel"}}
+      iex> conn.params
+      %{"filter" => %{"name" => "Manuel"}}
+
+  """
+  @spec fetch_query_params(t(), keyword()) :: t()
+  def fetch_query_params(%__MODULE__{} = conn, _opts \\ []) do
+    query_params = Query.decode(conn.query_string)
+    %{conn | query_params: query_params, params: Map.merge(query_params, conn.params)}
   end
 
   @doc """

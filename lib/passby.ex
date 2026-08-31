@@ -21,8 +21,14 @@ defmodule Passby do
   ## Plug and Bypass Compatibility
 
   `Passby.Conn` implements the same attributes and helpers as `Plug.Conn`
-  (`get_req_header/2`, `put_resp_header/3`, `resp/3`, `send_resp/1`), allowing
-  existing test suites to migrate from `Bypass` with zero friction.
+  (`get_req_header/2`, `put_resp_header/3`, `resp/3`, `send_resp/1`,
+  `fetch_query_params/1`), allowing existing test suites to migrate from
+  `Bypass` with zero friction.
+
+  Handlers receive a conn whose `query_params` and `params` are already decoded
+  the same way `Bypass`/`Plug.Conn.Query` decode them, including bracket
+  notation (`"filter[name]=Manuel"` -> `%{"filter" => %{"name" => "Manuel"}}`)
+  and lists (`"tags[]=a&tags[]=b"` -> `%{"tags" => ["a", "b"]}`).
   """
 
   alias Passby.{Conn, Instance}
@@ -183,6 +189,12 @@ defmodule Passby do
   end
 
   # Delegates for Conn helpers
+
+  @doc """
+  Fetches query params into the connection. Delegate to `Passby.Conn.fetch_query_params/2`.
+  """
+  defdelegate fetch_query_params(conn), to: Conn
+  defdelegate fetch_query_params(conn, opts), to: Conn
 
   @doc """
   Gets request headers from the connection. Delegate to `Passby.Conn.get_req_header/2`.
