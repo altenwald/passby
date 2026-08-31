@@ -265,6 +265,69 @@ defmodule PassbyTest do
     assert conn.params == %{"a" => %{"b" => "c"}}
   end
 
+  test "expect/4 matches route patterns and captures path params like Bypass" do
+    bypass = Passby.open()
+
+    Passby.expect(bypass, "GET", "/users/:id", fn conn ->
+      assert conn.path_params == %{"id" => "42"}
+      assert conn.params == %{"id" => "42"}
+      Passby.Conn.resp(conn, 200, "user 42")
+    end)
+
+    url = "http://127.0.0.1:#{bypass.port}/users/42"
+    assert {:ok, {{_, 200, _}, _, ~c"user 42"}} = http_get(url)
+  end
+
+  test "captures multiple path params in a single route" do
+    bypass = Passby.open()
+
+    Passby.expect(bypass, "GET", "/users/:user_id/posts/:post_id", fn conn ->
+      assert conn.path_params == %{"user_id" => "7", "post_id" => "99"}
+      Passby.Conn.resp(conn, 200, "ok")
+    end)
+
+    url = "http://127.0.0.1:#{bypass.port}/users/7/posts/99"
+    assert {:ok, {{_, 200, _}, _, ~c"ok"}} = http_get(url)
+  end
+
+  test "path params and query params are merged, path params winning on conflict" do
+    bypass = Passby.open()
+
+    Passby.expect(bypass, "GET", "/users/:id", fn conn ->
+      assert conn.path_params == %{"id" => "42"}
+      assert conn.query_params == %{"id" => "ignored", "page" => "2"}
+      assert conn.params == %{"id" => "42", "page" => "2"}
+      Passby.Conn.resp(conn, 200, "ok")
+    end)
+
+    url = "http://127.0.0.1:#{bypass.port}/users/42?id=ignored&page=2"
+    assert {:ok, {{_, 200, _}, _, ~c"ok"}} = http_get(url)
+  end
+
+  test "a route pattern does not match when the segment count differs" do
+    bypass = Passby.open()
+
+    Passby.expect(bypass, "GET", "/users/:id", fn conn ->
+      Passby.Conn.resp(conn, 200, "matched")
+    end)
+
+    url = "http://127.0.0.1:#{bypass.port}/users/42/extra"
+    assert {:ok, {{_, 500, _}, _, body}} = http_get(url)
+    assert to_string(body) =~ "No expectation"
+  end
+
+  test "static routes still match exactly and expose empty path params" do
+    bypass = Passby.open()
+
+    Passby.expect(bypass, "GET", "/health", fn conn ->
+      assert conn.path_params == %{}
+      Passby.Conn.resp(conn, 200, "OK")
+    end)
+
+    url = "http://127.0.0.1:#{bypass.port}/health"
+    assert {:ok, {{_, 200, _}, _, ~c"OK"}} = http_get(url)
+  end
+
   test "handles large request bodies properly" do
     bypass = Passby.open()
     large_body = String.duplicate("abcdef123456", 5_000)

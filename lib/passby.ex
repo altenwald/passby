@@ -29,6 +29,9 @@ defmodule Passby do
   the same way `Bypass`/`Plug.Conn.Query` decode them, including bracket
   notation (`"filter[name]=Manuel"` -> `%{"filter" => %{"name" => "Manuel"}}`)
   and lists (`"tags[]=a&tags[]=b"` -> `%{"tags" => ["a", "b"]}`).
+
+  Expectation paths may use `:param` segments (`"/users/:id"`); captured values
+  land in `conn.path_params` and are merged into `conn.params`.
   """
 
   alias Passby.{Conn, Instance}
@@ -115,10 +118,18 @@ defmodule Passby do
   @doc """
   Adds an expectation for a specific HTTP method and path.
 
+  The `path` may contain `:param` segments; the captured values are placed in
+  `conn.path_params` and merged into `conn.params` (path params win over query
+  params on key conflicts), matching `Bypass`.
+
   ## Examples
 
       Passby.expect(bypass, "POST", "/api/v1/checkout", fn conn ->
         Passby.Conn.resp(conn, 201, "Created")
+      end)
+
+      Passby.expect(bypass, "GET", "/users/:id", fn conn ->
+        Passby.Conn.resp(conn, 200, ~s({"id": \#{conn.params["id"]}}))
       end)
 
   """

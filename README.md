@@ -19,6 +19,7 @@ A **100% Elixir, 0-dependency** mock HTTP server designed for testing HTTP clien
 - **Drop-in Bypass API**: Identical function signatures (`open/1`, `expect/2,4`, `expect_once/2,4`, `stub/4`, `pass/1`, `down/1`, `up/1`).
 - **Plug.Conn Compatibility**: `Passby.Conn` implements the same fields and helper functions (`resp/3`, `send_resp/1`, `get_req_header/2`, `put_resp_header/3`, `fetch_query_params/1`).
 - **Params Parsing**: `conn.query_params` and `conn.params` are decoded exactly like `Bypass`/`Plug` do, including bracket notation (`filter[name]=Manuel` becomes `%{"filter" => %{"name" => "Manuel"}}`) and lists (`tags[]=a&tags[]=b`).
+- **Route Patterns**: paths accept `:param` segments (`/users/:id`); captured values land in `conn.path_params` and are merged into `conn.params`, just like `Bypass`.
 - **Concurrent & Isolated**: Each test can spin up its own instance on an ephemeral dynamic port.
 - **Outage Simulation**: Easily simulate network disconnects and connection-refused errors with `Passby.down/1` and `Passby.up/1`.
 
@@ -118,6 +119,12 @@ end)
 Passby.expect_once(bypass, "POST", "/checkout", fn conn ->
   assert conn.req_body =~ "item_123"
   Passby.resp(conn, 200, ~s({"order_id": 999}))
+end)
+
+# Route patterns: `:param` segments are captured into conn.path_params / conn.params
+Passby.expect(bypass, "GET", "/users/:id", fn conn ->
+  assert conn.path_params == %{"id" => "42"}
+  Passby.resp(conn, 200, ~s({"id": #{conn.params["id"]}}))
 end)
 ```
 

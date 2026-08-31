@@ -153,8 +153,8 @@ defmodule Passby.Instance do
   end
 
   def handle_call({:match_and_consume, method, path}, _from, state) do
-    {handler, new_expectations} = match_and_consume(state.expectations, method, path)
-    {:reply, handler, %{state | expectations: new_expectations}}
+    {handler, path_params, new_expectations} = match_and_consume(state.expectations, method, path)
+    {:reply, {handler, path_params}, %{state | expectations: new_expectations}}
   end
 
   @impl GenServer
@@ -209,12 +209,20 @@ defmodule Passby.Instance do
   defp handle_client(server_pid, client_socket) do
     case HttpParser.parse_request(client_socket) do
       {:ok, conn} ->
-        handler = GenServer.call(server_pid, {:match_and_consume, conn.method, conn.request_path})
-        dispatch_handler(client_socket, conn, handler)
+        {handler, path_params} =
+          GenServer.call(server_pid, {:match_and_consume, conn.method, conn.request_path})
+
+        dispatch_handler(client_socket, put_path_params(conn, path_params), handler)
 
       {:error, _reason} ->
         :gen_tcp.close(client_socket)
     end
+  end
+
+  defp put_path_params(conn, path_params) when map_size(path_params) == 0, do: conn
+
+  defp put_path_params(conn, path_params) do
+    %{conn | path_params: path_params, params: Map.merge(conn.params, path_params)}
   end
 
   defp dispatch_handler(client_socket, conn, nil) do
@@ -285,8 +293,8 @@ defmodule Passby.Instance do
   # 3. :stub expectations (in FIFO order) - kept on match
   defp match_and_consume(expectations, method, path) do
     case find_and_consume_once(expectations, method, path, []) do
-      {:matched, fun, new_exps} ->
-        {fun, new_exps}
+      {:matched, fun, params, new_exps} ->
+        {fun, params, new_exps}
 
       :not_found ->
         find_persistent_or_stub(expectations, method, path)
@@ -294,38 +302,37 @@ defmodule Passby.Instance do
   end
 
   defp find_persistent_or_stub(expectations, method, path) do
-    case find_persistent(expectations, method, path) do
-      {:matched, fun} ->
-        {fun, expectations}
+    case find_matching(expectations, :persistent, method, path) do
+      {:matched, fun, params} ->
+        {fun, params, expectations}
 
       :not_found ->
-        find_stub_or_nil(expectations, method, path)
+        case find_matching(expectations, :stub, method, path) do
+          {:matched, fun, params} -> {fun, params, expectations}
+          :not_found -> {nil, %{}, expectations}
+        end
     end
   end
 
-  defp find_persistent(expectations, method, path) do
-    case Enum.find(expectations, fn exp ->
-           exp.type == :persistent and matches?(exp, method, path)
-         end) do
-      %{fun: fun} -> {:matched, fun}
-      nil -> :not_found
-    end
-  end
+  defp find_matching(expectations, type, method, path) do
+    Enum.reduce_while(expectations, :not_found, fn
+      %{type: ^type} = exp, acc ->
+        case match_expectation(exp, method, path) do
+          {:ok, params} -> {:halt, {:matched, exp.fun, params}}
+          :error -> {:cont, acc}
+        end
 
-  defp find_stub_or_nil(expectations, method, path) do
-    case Enum.find(expectations, fn exp -> exp.type == :stub and matches?(exp, method, path) end) do
-      %{fun: fun} -> {fun, expectations}
-      nil -> {nil, expectations}
-    end
+      _exp, acc ->
+        {:cont, acc}
+    end)
   end
 
   defp find_and_consume_once([], _method, _path, _acc), do: :not_found
 
   defp find_and_consume_once([%{type: :once} = exp | rest], method, path, acc) do
-    if matches?(exp, method, path) do
-      {:matched, exp.fun, Enum.reverse(acc) ++ rest}
-    else
-      find_and_consume_once(rest, method, path, [exp | acc])
+    case match_expectation(exp, method, path) do
+      {:ok, params} -> {:matched, exp.fun, params, Enum.reverse(acc) ++ rest}
+      :error -> find_and_consume_once(rest, method, path, [exp | acc])
     end
   end
 
@@ -333,10 +340,38 @@ defmodule Passby.Instance do
     find_and_consume_once(rest, method, path, [exp | acc])
   end
 
-  defp matches?(%{method: exp_method, path: exp_path}, req_method, req_path) do
-    (is_nil(exp_method) or exp_method == req_method) and
-      (is_nil(exp_path) or exp_path == req_path)
+  defp match_expectation(%{method: exp_method, path: exp_path}, req_method, req_path) do
+    if is_nil(exp_method) or exp_method == req_method do
+      match_path(exp_path, req_path)
+    else
+      :error
+    end
   end
+
+  defp match_path(nil, _req_path), do: {:ok, %{}}
+
+  defp match_path(exp_path, req_path) do
+    exp_segments = String.split(exp_path, "/", trim: true)
+    req_segments = String.split(req_path, "/", trim: true)
+
+    if length(exp_segments) == length(req_segments) do
+      match_segments(exp_segments, req_segments, %{})
+    else
+      :error
+    end
+  end
+
+  defp match_segments([], [], params), do: {:ok, params}
+
+  defp match_segments([":" <> name | exp_rest], [value | req_rest], params) do
+    match_segments(exp_rest, req_rest, Map.put(params, name, value))
+  end
+
+  defp match_segments([same | exp_rest], [same | req_rest], params) do
+    match_segments(exp_rest, req_rest, params)
+  end
+
+  defp match_segments(_exp_segments, _req_segments, _params), do: :error
 
   defp normalize_filter(nil), do: nil
   defp normalize_filter(atom) when is_atom(atom), do: atom |> Atom.to_string() |> String.upcase()
